@@ -1,13 +1,36 @@
 "use client";
 
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { adminApi } from "@/lib/api-client";
 
 const KNOWN_LABELS = ["Drug", "Condition", "Gene", "Enzyme", "Symptom", "Treatment"];
 
 export default function GraphPage() {
   const [selectedLabel, setSelectedLabel] = useState<string>("");
+  const [clearing, setClearing] = useState(false);
+  const [clearResult, setClearResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const queryClient = useQueryClient();
+
+  async function handleClear() {
+    if (!confirm("This will permanently delete all ingested knowledge (Neo4j graph, vector embeddings, BM25 index). This cannot be undone.\n\nAre you sure?")) return;
+    setClearing(true);
+    setClearResult(null);
+    try {
+      const res = await adminApi.clearKnowledgeBase();
+      if (res.status === "ok") {
+        setClearResult({ ok: true, message: "Knowledge base cleared. Re-ingest documents to rebuild." });
+      } else {
+        setClearResult({ ok: false, message: `Partial clear — errors: ${res.errors.join(", ")}` });
+      }
+      queryClient.invalidateQueries({ queryKey: ["admin", "graph"] });
+      setSelectedLabel("");
+    } catch (e) {
+      setClearResult({ ok: false, message: e instanceof Error ? e.message : "Clear failed" });
+    } finally {
+      setClearing(false);
+    }
+  }
 
   const counts = useQuery({
     queryKey: ["admin", "graph", "counts"],
@@ -24,12 +47,25 @@ export default function GraphPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Graph Explorer</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Browse the medical knowledge graph
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Graph Explorer</h1>
+          <p className="text-sm text-gray-500 mt-1">Browse the medical knowledge graph</p>
+        </div>
+        <button
+          onClick={handleClear}
+          disabled={clearing}
+          className="shrink-0 px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 rounded-lg transition-colors"
+        >
+          {clearing ? "Clearing…" : "Clear Knowledge Base"}
+        </button>
       </div>
+
+      {clearResult && (
+        <div className={`px-4 py-3 rounded-lg text-sm ${clearResult.ok ? "bg-green-50 text-green-700 border border-green-200" : "bg-red-50 text-red-700 border border-red-200"}`}>
+          {clearResult.message}
+        </div>
+      )}
 
       {/* Node counts by label */}
       <section>

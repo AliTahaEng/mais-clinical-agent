@@ -78,6 +78,14 @@ class BM25Adapter(ISearchEngine):
             for i, score in indexed[:top_k]
         ]
 
+    async def clear(self) -> None:
+        """Wipe the entire BM25 index."""
+        self._ids = []
+        self._texts = []
+        self._metadata = []
+        self._bm25 = None
+        logger.info("bm25.index_cleared")
+
     async def delete(self, ids: list[str]) -> None:
         ids_set = set(ids)
         keep = [i for i, id_ in enumerate(self._ids) if id_ not in ids_set]

@@ -27,6 +27,10 @@ def create_app(container: Container) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await container.build()
+        # Mark any jobs left in "running"/"queued" from a previous crashed session
+        cleaned = await container.pipeline_job_store.cleanup_stale_jobs()
+        if cleaned:
+            logger.warning("app.stale_jobs_recovered", count=cleaned)
         logger.info("app.startup_complete")
         yield
         await container.close()

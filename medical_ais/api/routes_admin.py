@@ -176,7 +176,7 @@ async def get_graph_nodes(
     """Get knowledge graph node counts or nodes by label."""
     try:
         if label:
-            query = f"MATCH (n:{label}) RETURN n.name AS name, n.type AS type, n.description AS description LIMIT $limit"
+            query = f"MATCH (n:{label}) RETURN n.canonical_name AS name, n.entity_type AS type, n.description AS description LIMIT $limit"
             rows = await container.graph_db.run_query(query, {"limit": limit})
         else:
             query = "MATCH (n) RETURN labels(n)[0] AS label, count(n) AS count"
@@ -184,6 +184,53 @@ async def get_graph_nodes(
         return {"nodes": rows, "label_filter": label}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ── Knowledge base clear ──────────────────────────────────────────────────────
+
+@admin_router.delete("/knowledge-base")
+async def clear_knowledge_base(
+    container: Container = Depends(get_container),
+    _: User = Depends(require_admin),
+) -> dict[str, Any]:
+    """
+    Wipe all ingested knowledge:
+      - Neo4j: delete every node and relationship
+      - LanceDB: drop the medical_chunks table
+      - BM25: clear the in-memory index
+    This is irreversible. Re-ingest documents to rebuild.
+    """
+    results: dict[str, Any] = {}
+    errors: list[str] = []
+
+    # 1. Neo4j — delete all nodes and relationships
+    try:
+        await container.graph_db.run_write("MATCH (n) DETACH DELETE n")
+        results["neo4j"] = "cleared"
+    except Exception as exc:
+        errors.append(f"neo4j: {exc}")
+        results["neo4j"] = f"error: {exc}"
+
+    # 2. LanceDB — drop table
+    try:
+        if hasattr(container.vector_store, "clear"):
+            await container.vector_store.clear()
+        results["lancedb"] = "cleared"
+    except Exception as exc:
+        errors.append(f"lancedb: {exc}")
+        results["lancedb"] = f"error: {exc}"
+
+    # 3. BM25 — clear in-memory index
+    try:
+        if hasattr(container.search_engine, "clear"):
+            await container.search_engine.clear()
+        results["bm25"] = "cleared"
+    except Exception as exc:
+        errors.append(f"bm25: {exc}")
+        results["bm25"] = f"error: {exc}"
+
+    status = "errors" if errors else "ok"
+    return {"status": status, "results": results, "errors": errors}
 
 
 # ── Feature flags ─────────────────────────────────────────────────────────────

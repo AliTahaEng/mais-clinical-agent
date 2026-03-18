@@ -247,4 +247,8 @@ export const adminApi = {
   listJobs(limit = 20): Promise<{ jobs: PipelineJobSummary[]; total: number }> {
     return apiFetch(`/admin/ingest/jobs?limit=${limit}`);
   },
+  /** Wipe all ingested knowledge (Neo4j + LanceDB + BM25). Irreversible. */
+  clearKnowledgeBase(): Promise<{ status: string; results: Record<string, string>; errors: string[] }> {
+    return apiFetch("/admin/knowledge-base", { method: "DELETE" });
+  },
 };

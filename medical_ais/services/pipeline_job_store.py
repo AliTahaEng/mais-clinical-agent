@@ -189,6 +189,39 @@ class PipelineJobStore:
     async def get_job(self, job_id: str) -> dict | None:
         return await self._load(job_id)
 
+    async def cleanup_stale_jobs(self) -> int:
+        """On startup: mark any jobs still in running/queued state as failed.
+
+        These are jobs that were interrupted by a server crash or Docker stop.
+        Returns the number of jobs cleaned up.
+        """
+        jobs = await self.list_jobs(limit=100)
+        cleaned = 0
+        for j in jobs:
+            if j.get("status") in ("running", "queued"):
+                j["status"] = "failed"
+                j["finished_at"] = _now()
+                j["error"] = "Server restarted while job was in progress. Please re-upload the file."
+                for s in j.get("steps", []):
+                    if s["status"] == "running":
+                        s["status"] = "failed"
+                        s["finished_at"] = _now()
+                        if s.get("started_at"):
+                            s["duration_ms"] = _ms(s["started_at"], s["finished_at"])
+                        s["logs"].append(_log_entry("error", "Step interrupted by server restart"))
+                    elif s["status"] == "pending":
+                        s["status"] = "skipped"
+                await self._persist(j["job_id"], j)
+                cleaned += 1
+                logger.warning(
+                    "pipeline_job_store.stale_job_cleaned",
+                    job_id=j["job_id"],
+                    files=j.get("files"),
+                )
+        if cleaned:
+            logger.info("pipeline_job_store.cleanup_complete", stale_jobs_found=cleaned)
+        return cleaned
+
     async def list_jobs(self, limit: int = 20) -> list[dict]:
         """Return recent jobs newest-first."""
         try:
