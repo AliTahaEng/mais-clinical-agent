@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:zilliz.com)",
+      "WebFetch(domain:www.machinelearningplus.com)",
+      "WebFetch(domain:www.inexture.ai)",
+      "WebFetch(domain:techcommunity.microsoft.com)"
+    ]
+  }
+}
