@@ -54,6 +54,15 @@ export interface InterruptEvent {
   proposed_actions: ProposedAction[];
 }
 
+export interface SourceItem {
+  index: number;
+  source_type: "vector" | "bm25" | "graph_local" | "graph_global" | "web" | "unknown";
+  score: number;
+  text_preview: string;
+  url?: string | null;
+  filename?: string | null;
+}
+
 export interface DoneEvent {
   session_id: string;
   answer: string;
@@ -65,6 +74,8 @@ export interface DoneEvent {
   actions_executed: number;
   requires_human_approval: boolean;
   escalated: boolean;
+  sources: SourceItem[];
+  web_search_used: boolean;
 }
 
 export interface ErrorEvent {

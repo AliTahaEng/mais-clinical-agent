@@ -18,12 +18,14 @@ logger = structlog.get_logger(__name__)
 _FIND_ENTITY = """
 MATCH (e:Entity)
 WHERE toLower(e.canonical_name) = toLower($name)
-   OR $name IN [alias IN e.aliases | toLower(alias)]
+   OR toLower(e.canonical_name) CONTAINS toLower($name)
+   OR any(alias IN e.aliases WHERE toLower(alias) CONTAINS toLower($name))
 RETURN e.canonical_name AS name,
        e.entity_type    AS entity_type,
        e.description    AS description,
        e.community_id   AS community_id
-LIMIT 1
+ORDER BY size(e.canonical_name)
+LIMIT 3
 """
 
 _TRAVERSE_RELATIONSHIPS = """
@@ -58,8 +60,8 @@ _FULL_TEXT_COMMUNITY = """
 MATCH (e:Entity)
 WHERE e.community_id IS NOT NULL
   AND (
-    toLower(e.canonical_name) CONTAINS toLower($query)
-    OR any(alias IN e.aliases WHERE toLower(alias) CONTAINS toLower($query))
+    toLower(e.canonical_name) CONTAINS toLower($term)
+    OR any(alias IN e.aliases WHERE toLower(alias) CONTAINS toLower($term))
   )
 WITH e.community_id AS cid, count(e) AS hits
 ORDER BY hits DESC
@@ -75,7 +77,7 @@ LIMIT 1
 # ── Tool functions ─────────────────────────────────────────────────────────────
 
 async def find_entity(name: str, db: IGraphDB) -> dict[str, Any] | None:
-    """Return entity node details, or None if not found."""
+    """Return entity node details, or None if not found. Uses CONTAINS for fuzzy matching."""
     rows = await db.run_query(_FIND_ENTITY, {"name": name})
     return rows[0] if rows else None
 
@@ -108,9 +110,22 @@ async def get_community_context(
     query: str,
     db: IGraphDB,
 ) -> dict[str, Any] | None:
-    """Return community context most relevant to *query*."""
-    rows = await db.run_query(_FULL_TEXT_COMMUNITY, {"query": query})
-    return rows[0] if rows else None
+    """
+    Return community context most relevant to *query*.
+    Tries each significant word in the query individually to find a matching community.
+    """
+    _STOP = {"what", "is", "are", "how", "does", "do", "can", "the", "a", "an",
+             "of", "for", "in", "and", "or", "with", "to", "from", "about",
+             "tell", "me", "you", "why", "when", "which", "who", "where",
+             "not", "no", "if", "then", "give", "show", "please", "hi", "hello"}
+    words = [w.strip("?.,!") for w in query.lower().split()
+             if w.strip("?.,!") not in _STOP and len(w.strip("?.,!")) > 3]
+
+    for term in words[:6]:
+        rows = await db.run_query(_FULL_TEXT_COMMUNITY, {"term": term})
+        if rows:
+            return rows[0]
+    return None
 
 
 def format_graph_context(

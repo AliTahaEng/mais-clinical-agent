@@ -1,15 +1,95 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { MarkdownRenderer } from "@/components/MarkdownRenderer";
 import { querySSE } from "@/lib/api-client";
 import { useSessionStore } from "@/lib/stores/session-store";
 import { SSEStatusIndicator } from "@/components/SSEStatusIndicator";
 import { ActionCard } from "@/components/ActionCard";
 import { approvalApi } from "@/lib/api-client";
+import type { SourceItem } from "@/lib/types";
+
+// ── Source type metadata ──────────────────────────────────────────────────────
+
+const SOURCE_META: Record<string, { label: string; color: string; bg: string; border: string }> = {
+  vector:       { label: "Document (semantic)",  color: "text-blue-700",   bg: "bg-blue-50",   border: "border-blue-200" },
+  bm25:         { label: "Document (keyword)",   color: "text-blue-700",   bg: "bg-blue-50",   border: "border-blue-200" },
+  graph_local:  { label: "Knowledge Graph",      color: "text-purple-700", bg: "bg-purple-50", border: "border-purple-200" },
+  graph_global: { label: "Knowledge Graph",      color: "text-purple-700", bg: "bg-purple-50", border: "border-purple-200" },
+  web:          { label: "Web Search",           color: "text-emerald-700",bg: "bg-emerald-50",border: "border-emerald-200" },
+  unknown:      { label: "Retrieved",            color: "text-gray-600",   bg: "bg-gray-50",   border: "border-gray-200" },
+};
+
+const SOURCE_ICON: Record<string, string> = {
+  vector: "📄", bm25: "📄",
+  graph_local: "🧠", graph_global: "🧠",
+  web: "🌐", unknown: "📎",
+};
+
+// ── Source card ───────────────────────────────────────────────────────────────
+
+function SourceCard({ source }: { source: SourceItem }) {
+  const [expanded, setExpanded] = useState(false);
+  const meta = SOURCE_META[source.source_type] ?? SOURCE_META.unknown;
+  const icon = SOURCE_ICON[source.source_type] ?? "📎";
+  const confidencePct = Math.round(source.score * 100);
+
+  return (
+    <div className={`rounded-lg border ${meta.border} ${meta.bg} p-3 text-sm`}>
+      {/* Header row */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-base shrink-0">{icon}</span>
+          <div className="min-w-0">
+            <span className={`font-semibold ${meta.color}`}>Source {source.index}</span>
+            <span className={`ml-2 text-xs ${meta.color} opacity-75`}>{meta.label}</span>
+            {source.filename && (
+              <p className="text-xs text-gray-500 truncate mt-0.5">{source.filename}</p>
+            )}
+            {source.url && source.source_type === "web" && (
+              <a
+                href={source.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-emerald-600 hover:underline truncate block mt-0.5"
+              >
+                {source.url}
+              </a>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {source.score > 0 && (
+            <span className="text-xs text-gray-400">
+              {confidencePct}% match
+            </span>
+          )}
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            className={`text-xs px-2 py-0.5 rounded-full border ${meta.border} ${meta.color} hover:opacity-75 transition-opacity`}
+          >
+            {expanded ? "Less" : "Preview"}
+          </button>
+        </div>
+      </div>
+
+      {/* Expandable preview */}
+      {expanded && source.text_preview && (
+        <p className="mt-2 pt-2 border-t border-current/10 text-xs text-gray-600 leading-relaxed whitespace-pre-wrap">
+          {source.text_preview}
+          {source.text_preview.length >= 300 && "…"}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function QueryPage() {
   const [query, setQuery] = useState("");
   const [patientId, setPatientId] = useState("");
+  const [sourcesOpen, setSourcesOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
   const {
@@ -26,7 +106,6 @@ export default function QueryPage() {
     setDone,
     setError,
     reset,
-    activeSessionId,
   } = useSessionStore();
 
   const isStreaming = streamStatus === "streaming";
@@ -36,6 +115,7 @@ export default function QueryPage() {
     if (!query.trim() || isStreaming) return;
 
     reset();
+    setSourcesOpen(false);
     const controller = new AbortController();
     abortRef.current = controller;
     startStream("pending");
@@ -66,7 +146,7 @@ export default function QueryPage() {
     reset();
   }
 
-  // ── Approval handling ──────────────────────────────────────────────────────
+  // ── Approval handling ───────────────────────────────────────────────────────
   const [selectedIndices, setSelectedIndices] = useState<number[]>([]);
   const [approvingAll, setApprovingAll] = useState(false);
 
@@ -84,7 +164,6 @@ export default function QueryPage() {
         approved_indices: selectedIndices,
         feedback: "Clinician reviewed and approved",
       });
-      // Reset to show completion
       reset();
     } catch {
       setError("Failed to submit approval");
@@ -93,9 +172,10 @@ export default function QueryPage() {
     }
   }
 
-  const confidencePercent = doneEvent
-    ? Math.round(doneEvent.confidence_score * 100)
-    : null;
+  const answerText = streamingTokens || doneEvent?.answer || "";
+  const confidencePct = doneEvent ? Math.round(doneEvent.confidence_score * 100) : null;
+  const sources = doneEvent?.sources ?? [];
+  const webUsed = doneEvent?.web_search_used ?? false;
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -181,37 +261,93 @@ export default function QueryPage() {
         </div>
       )}
 
-      {/* Streaming answer */}
-      {(streamingTokens || streamStatus === "complete") && (
-        <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
-          <div className="flex items-center justify-between mb-3">
+      {/* Answer card */}
+      {(answerText || streamStatus === "complete") && (
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+
+          {/* Answer header */}
+          <div className="flex items-center justify-between px-6 pt-5 pb-3">
             <h2 className="text-sm font-semibold text-gray-700">Answer</h2>
-            {confidencePercent !== null && (
-              <span
-                className={
-                  confidencePercent >= 80
-                    ? "text-xs font-medium text-green-600 bg-green-50 px-2 py-0.5 rounded-full"
-                    : confidencePercent >= 60
-                    ? "text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full"
-                    : "text-xs font-medium text-red-600 bg-red-50 px-2 py-0.5 rounded-full"
-                }
+            <div className="flex items-center gap-2">
+              {webUsed && (
+                <span className="flex items-center gap-1 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
+                  🌐 Web search included
+                </span>
+              )}
+              {doneEvent?.fact_check_passed && (
+                <span className="flex items-center gap-1 text-xs font-medium text-green-700 bg-green-50 border border-green-200 px-2 py-0.5 rounded-full">
+                  ✓ Fact-checked
+                </span>
+              )}
+              {confidencePct !== null && (
+                <span
+                  className={
+                    confidencePct >= 80
+                      ? "text-xs font-semibold text-green-700 bg-green-50 border border-green-200 px-2 py-0.5 rounded-full"
+                      : confidencePct >= 60
+                      ? "text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full"
+                      : "text-xs font-semibold text-red-700 bg-red-50 border border-red-200 px-2 py-0.5 rounded-full"
+                  }
+                >
+                  {confidencePct}% confidence
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Rendered markdown answer */}
+          <div className="px-6 pb-5">
+            <div>
+              {isStreaming ? (
+                <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">
+                  {answerText}
+                  <span className="inline-block w-0.5 h-4 bg-blue-500 animate-pulse ml-0.5 align-middle" />
+                </p>
+              ) : (
+                <MarkdownRenderer content={answerText} />
+              )}
+            </div>
+          </div>
+
+          {/* Sources section */}
+          {sources.length > 0 && (
+            <div className="border-t border-gray-100">
+              <button
+                onClick={() => setSourcesOpen((v) => !v)}
+                className="w-full flex items-center justify-between px-6 py-3 text-sm text-gray-600 hover:bg-gray-50 transition-colors"
               >
-                {confidencePercent}% confidence
-              </span>
-            )}
-          </div>
-          <div className="prose prose-sm max-w-none text-gray-800 whitespace-pre-wrap">
-            {streamingTokens || doneEvent?.answer}
-            {isStreaming && (
-              <span className="inline-block w-0.5 h-4 bg-blue-500 animate-pulse ml-0.5" />
-            )}
-          </div>
+                <span className="font-medium">
+                  {sources.length} Sources used
+                  {webUsed && <span className="ml-2 text-emerald-600">· includes web</span>}
+                </span>
+                <span className="text-gray-400">{sourcesOpen ? "▲ Hide" : "▼ Show"}</span>
+              </button>
+
+              {sourcesOpen && (
+                <div className="px-6 pb-5 space-y-2">
+                  {/* Source type legend */}
+                  <div className="flex flex-wrap gap-3 mb-3 text-xs text-gray-500">
+                    <span className="flex items-center gap-1">📄 Document knowledge</span>
+                    <span className="flex items-center gap-1">🧠 Knowledge graph</span>
+                    <span className="flex items-center gap-1">🌐 Web search</span>
+                  </div>
+                  {sources.map((src) => (
+                    <SourceCard key={src.index} source={src} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Footer stats */}
           {doneEvent && (
-            <div className="mt-4 pt-4 border-t border-gray-100 flex flex-wrap gap-4 text-xs text-gray-500">
-              <span>Chunks used: {doneEvent.chunks_used}</span>
-              <span>Actions proposed: {doneEvent.actions_proposed}</span>
-              {doneEvent.fact_check_passed && (
-                <span className="text-green-600">✓ Fact-checked</span>
+            <div className="border-t border-gray-100 px-6 py-3 flex flex-wrap gap-4 text-xs text-gray-400">
+              <span>{doneEvent.chunks_used} chunks retrieved</span>
+              {doneEvent.actions_proposed > 0 && (
+                <span>{doneEvent.actions_proposed} actions proposed</span>
+              )}
+              {doneEvent.actions_executed > 0 && (
+                <span>{doneEvent.actions_executed} actions executed</span>
               )}
             </div>
           )}
@@ -240,11 +376,7 @@ export default function QueryPage() {
 
           <div className="flex gap-3">
             <button
-              onClick={() =>
-                setSelectedIndices(
-                  interruptPayload.proposed_actions.map((_, i) => i)
-                )
-              }
+              onClick={() => setSelectedIndices(interruptPayload.proposed_actions.map((_, i) => i))}
               className="text-sm text-blue-600 hover:underline"
             >
               Select All

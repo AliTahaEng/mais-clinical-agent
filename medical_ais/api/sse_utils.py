@@ -138,15 +138,32 @@ async def astream_graph_events(
         return
 
     # ── Completed: emit done event ────────────────────────────────────────────
+    chunks = final_state.get("retrieved_chunks", [])
+
+    # Build source list — one entry per chunk sent to the synthesizer (max 15)
+    sources = []
+    for i, c in enumerate(chunks[:15]):
+        meta = c.get("metadata") or {}
+        sources.append({
+            "index": i + 1,
+            "source_type": c.get("source", "unknown"),
+            "score": round(float(c.get("score", 0.0)), 3),
+            "text_preview": (c.get("text") or "")[:300],
+            "url": meta.get("url"),
+            "filename": meta.get("filename") or meta.get("doc_id"),
+        })
+
     yield format_sse("done", {
         "session_id": final_state.get("session_id", ""),
         "answer": final_state.get("final_answer", ""),
         "confidence_score": final_state.get("confidence_score", 0.0),
         "fact_check_passed": final_state.get("fact_check_passed", True),
         "retrieval_quality": final_state.get("retrieval_quality", 0.0),
-        "chunks_used": len(final_state.get("retrieved_chunks", [])),
+        "chunks_used": len(chunks),
         "actions_proposed": len(final_state.get("proposed_actions", [])),
         "actions_executed": len(final_state.get("executed_actions", [])),
         "requires_human_approval": final_state.get("requires_human_approval", False),
         "escalated": final_state.get("escalated", False),
+        "sources": sources,
+        "web_search_used": any(c.get("source") == "web" for c in chunks),
     })
