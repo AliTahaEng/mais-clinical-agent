@@ -253,11 +253,18 @@ async def run_full_pipeline(
             all_chunks, embedding_model, vector_store, search_engine
         )
         result.chunks_embedded = embed_stats.chunks_embedded
+        if embed_stats.errors > 0:
+            await _log("step9_10_embedding_indexing", "warning",
+                       f"Embedding completed with {embed_stats.errors} errors — "
+                       f"{result.chunks_embedded}/{len(all_children)} chunks embedded successfully. "
+                       f"Check backend logs for details.")
         await _log("step9_10_embedding_indexing", "info",
-                   f"Embedded {result.chunks_embedded} chunks, BM25 index built")
+                   f"Embedded {result.chunks_embedded} chunks, "
+                   f"BM25 indexed {embed_stats.chunks_indexed} chunks")
         await _done("step9_10_embedding_indexing", {
             "chunks_embedded": result.chunks_embedded,
-            "bm25_indexed": len(all_chunks),
+            "bm25_indexed": embed_stats.chunks_indexed,
+            "embed_errors": embed_stats.errors,
         })
     except Exception as exc:
         await _fail("step9_10_embedding_indexing", str(exc))

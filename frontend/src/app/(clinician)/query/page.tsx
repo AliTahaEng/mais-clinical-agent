@@ -201,7 +201,7 @@ export default function QueryPage() {
             )}
           </div>
           <div className="prose prose-sm max-w-none text-gray-800 whitespace-pre-wrap">
-            {streamingTokens}
+            {streamingTokens || doneEvent?.answer}
             {isStreaming && (
               <span className="inline-block w-0.5 h-4 bg-blue-500 animate-pulse ml-0.5" />
             )}

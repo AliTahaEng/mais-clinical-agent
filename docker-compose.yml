@@ -11,8 +11,9 @@ version: "3.9"
 #   frontend — Next.js 14 (depends on backend)
 #
 # Volumes:
-#   Named volumes: neo4j, postgres, redis, hf_model_cache
-#   Bind mounts:   ./data/ → /app/data/ (LanceDB, documents, uploads)
+#   Named volumes: neo4j, postgres, redis, hf_model_cache, lancedb_data
+#   Bind mounts:   ./data/documents, ./data/uploads (LanceDB uses named volume
+#                  because Lance requires Linux ext4 — Windows bind mounts fail)
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
@@ -118,8 +119,9 @@ services:
       JWT_ACCESS_TOKEN_EXPIRE_MINUTES: "15"
       JWT_REFRESH_TOKEN_EXPIRE_DAYS: "7"
     volumes:
-      # Bind mounts — data persists on host at ./data/
-      - ./data/lancedb:/app/data/lancedb
+      # Named volume for LanceDB — must be Linux ext4 (Windows NTFS breaks mmap)
+      - lancedb_data:/app/data/lancedb
+      # Bind mounts for documents/uploads (no mmap needed, standard file I/O only)
       - ./data/documents:/app/data/documents
       - ./data/uploads:/app/data/uploads
       # HuggingFace model cache — downloads BGE-M3 once, reuses on restart
@@ -170,6 +172,7 @@ volumes:
   neo4j_plugins:
   postgres_data:
   redis_data:
+  lancedb_data:      # LanceDB vector store (named volume — Linux ext4, supports mmap)
   hf_model_cache:    # HuggingFace BGE-M3 + cross-encoder model cache
 
 # ─────────────────────────────────────────────────────────────────────────────

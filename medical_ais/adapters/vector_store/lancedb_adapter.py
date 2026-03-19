@@ -1,6 +1,9 @@
 """
 LanceDB vector store adapter.
 Stores embeddings locally as Arrow/Lance files — no server needed.
+
+Tested with lancedb 0.30.x + PyArrow 23.x + NumPy 2.x.
+Key requirement: vector field must be numpy float32 array, not a Python list[float].
 """
 from __future__ import annotations
 
@@ -31,24 +34,25 @@ class LanceDBAdapter(IVectorStore):
     async def _ensure_connected(self) -> None:
         if self._db is None:
             try:
-                import lancedb  # imported lazily to keep tests light
-                self._db = await asyncio.to_thread(lancedb.connect, self._path)
+                import lancedb
                 Path(self._path).mkdir(parents=True, exist_ok=True)
+                self._db = await asyncio.to_thread(lancedb.connect, self._path)
             except Exception as exc:
                 raise VectorStoreUnavailableError(f"LanceDB connect failed: {exc}") from exc
 
     async def _get_table(self) -> Any:
+        """Return the open table, or None if not yet created."""
         await self._ensure_connected()
+        # Use cached table handle first
+        if self._table is not None:
+            return self._table
         try:
             table_names = await asyncio.to_thread(self._db.table_names)
             if _TABLE_NAME not in table_names:
-                # Table not yet created — ingestion hasn't run step 9-10 yet
                 return None
-            if self._table is None:
-                self._table = await asyncio.to_thread(self._db.open_table, _TABLE_NAME)
+            self._table = await asyncio.to_thread(self._db.open_table, _TABLE_NAME)
             return self._table
         except Exception as exc:
-            # lancedb ≥ 0.10 raises when table is missing or files are inaccessible
             logger.warning("lancedb.table_not_accessible", error=str(exc))
             self._table = None
             return None
@@ -56,70 +60,45 @@ class LanceDBAdapter(IVectorStore):
     # ── IVectorStore ──────────────────────────────────────────────────────────
 
     async def upsert(self, documents: list[VectorDocument]) -> None:
+        """
+        Write documents to LanceDB.
+
+        Vectors MUST be numpy float32 arrays for lancedb 0.30.x to infer
+        the correct fixed_size_list<float32> schema. Python list[float]
+        produces float64 variable-length lists which lancedb rejects.
+        """
         if not documents:
             return
         await self._ensure_connected()
-        import pyarrow as pa
 
-        dim = len(documents[0].embedding)
+        import numpy as np
 
-        # Collect all metadata keys to build a consistent schema
-        meta_keys: list[str] = []
-        for doc in documents:
-            for k in doc.metadata:
-                key = f"meta_{k}"
-                if key not in meta_keys:
-                    meta_keys.append(key)
-
-        # Build PyArrow schema — float32 fixed-size list is required by lancedb ≥ 0.10
-        schema_fields = [
-            pa.field("id", pa.utf8()),
-            pa.field("text", pa.utf8()),
-            pa.field("vector", pa.list_(pa.float32(), dim)),
-        ] + [pa.field(k, pa.utf8()) for k in meta_keys]
-        schema = pa.schema(schema_fields)
-
-        # Build rows with float32 vectors
-        rows = []
-        for doc in documents:
-            row: dict = {
+        # Build rows — vector as numpy float32 (critical for lancedb schema inference)
+        rows = [
+            {
                 "id": doc.id,
                 "text": doc.text,
-                "vector": [float(x) for x in doc.embedding],
+                "vector": np.array(doc.embedding, dtype=np.float32),
+                **{f"meta_{k}": str(v) for k, v in doc.metadata.items()},
             }
-            for k in meta_keys:
-                orig_key = k[len("meta_"):]
-                row[k] = str(doc.metadata.get(orig_key, ""))
-            rows.append(row)
+            for doc in documents
+        ]
 
-        # Build a typed PyArrow table so lancedb gets the correct vector dtype
-        vectors_flat = []
-        for row in rows:
-            vectors_flat.extend(row["vector"])
-        vector_array = pa.FixedSizeListArray.from_arrays(
-            pa.array(vectors_flat, type=pa.float32()), dim
-        )
-        arrays = [
-            pa.array([r["id"] for r in rows], type=pa.utf8()),
-            pa.array([r["text"] for r in rows], type=pa.utf8()),
-            vector_array,
-        ] + [pa.array([r[k] for r in rows], type=pa.utf8()) for k in meta_keys]
-        table = pa.table(dict(zip(schema.names, arrays)))
+        def _write() -> Any:
+            table_names = self._db.table_names()
+            if _TABLE_NAME not in table_names:
+                return self._db.create_table(_TABLE_NAME, data=rows)
+            else:
+                tbl = self._db.open_table(_TABLE_NAME)
+                tbl.add(rows)
+                return tbl
 
         try:
-            table_names = await asyncio.to_thread(self._db.table_names)
-            if _TABLE_NAME not in table_names:
-                self._table = await asyncio.to_thread(
-                    self._db.create_table, _TABLE_NAME, data=table
-                )
-            else:
-                if self._table is None:
-                    self._table = await asyncio.to_thread(self._db.open_table, _TABLE_NAME)
-                await asyncio.to_thread(self._table.add, table)
+            self._table = await asyncio.to_thread(_write)
         except Exception as exc:
             logger.error("lancedb.upsert_failed", error=str(exc))
             self._table = None
-            raise  # re-raise so embedder.py can count the error
+            raise  # re-raise so embedder.py records the error
 
     async def search(
         self,
@@ -130,13 +109,16 @@ class LanceDBAdapter(IVectorStore):
     ) -> list[VectorSearchResult]:
         tbl = await self._get_table()
         if tbl is None:
-            logger.info("lancedb.search_skipped", reason="table not yet created — run document ingestion first")
+            logger.info("lancedb.search_skipped",
+                        reason="table not yet created — run document ingestion first")
             return []
 
         try:
+            import numpy as np
+            query_vec = np.array(query_embedding, dtype=np.float32)
+
             def _search() -> list[dict]:
-                query = tbl.search(query_embedding).limit(top_k)
-                return query.to_list()
+                return tbl.search(query_vec).limit(top_k).to_list()
 
             rows = await asyncio.to_thread(_search)
             return [
@@ -149,7 +131,7 @@ class LanceDBAdapter(IVectorStore):
             ]
         except Exception as exc:
             logger.warning("lancedb.search_failed", error=str(exc))
-            self._table = None  # force reconnect on next call
+            self._table = None
             return []
 
     async def clear(self) -> None:
