@@ -216,6 +216,17 @@ class Container:
             except Exception as exc:
                 logger.warning("container.user_store.connect_failed", error=str(exc))
 
+        # Pre-load ML models so the first query doesn't pay the cold-start cost
+        for name, adapter in [
+            ("embedding_model", self.embedding_model),
+            ("reranker", self.reranker),
+        ]:
+            if hasattr(adapter, "warm_up"):
+                try:
+                    await adapter.warm_up()
+                except Exception as exc:
+                    logger.warning(f"container.{name}.warm_up_failed", error=str(exc))
+
     async def _seed_admin(self) -> None:
         """Create the default admin account if no admin exists yet."""
         try:

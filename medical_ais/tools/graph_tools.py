@@ -28,20 +28,22 @@ ORDER BY size(e.canonical_name)
 LIMIT 3
 """
 
-_TRAVERSE_RELATIONSHIPS = """
-MATCH (e:Entity {canonical_name: $name})-[r:RELATIONSHIP*1..$hops]-(related:Entity)
+# NOTE: $hops cannot be a parameter in variable-length patterns — it is injected
+# as a literal integer at call time via string formatting (see traverse_relationships).
+_TRAVERSE_RELATIONSHIPS_TMPL = """
+MATCH (e:Entity {{canonical_name: $name}})-[r:RELATIONSHIP*1..{hops}]-(related:Entity)
 RETURN DISTINCT
   e.canonical_name       AS source,
   related.canonical_name AS target,
-  r[-1].type             AS rel_type,
+  type(r[-1])            AS rel_type,
   related.entity_type    AS entity_type,
   related.description    AS description
 LIMIT 50
 """
 
-_FIND_CONNECTION = """
+_FIND_CONNECTION_TMPL = """
 MATCH path = shortestPath(
-  (a:Entity {canonical_name: $entity_a})-[*..{max_hops}]-(b:Entity {canonical_name: $entity_b})
+  (a:Entity {{canonical_name: $entity_a}})-[*..{max_hops}]-(b:Entity {{canonical_name: $entity_b}})
 )
 RETURN [n IN nodes(path) | n.canonical_name] AS path_nodes,
        [r IN relationships(path) | type(r)] AS rel_types,
@@ -87,11 +89,12 @@ async def traverse_relationships(
     db: IGraphDB,
     max_hops: int = 2,
 ) -> list[dict[str, Any]]:
-    """Return entities reachable from *entity_name* within *max_hops*."""
-    return await db.run_query(
-        _TRAVERSE_RELATIONSHIPS,
-        {"name": entity_name, "hops": max_hops},
-    )
+    """Return entities reachable from *entity_name* within *max_hops*.
+    Neo4j does not allow parameters in variable-length patterns, so max_hops
+    is injected as a literal integer into the query string.
+    """
+    query = _TRAVERSE_RELATIONSHIPS_TMPL.format(hops=int(max_hops))
+    return await db.run_query(query, {"name": entity_name})
 
 
 async def find_connection(
@@ -101,7 +104,7 @@ async def find_connection(
     max_hops: int = 3,
 ) -> dict[str, Any] | None:
     """Return shortest path between two entities, or None if unreachable."""
-    query = _FIND_CONNECTION.replace("{max_hops}", str(max_hops))
+    query = _FIND_CONNECTION_TMPL.format(max_hops=int(max_hops))
     rows = await db.run_query(query, {"entity_a": entity_a, "entity_b": entity_b})
     return rows[0] if rows else None
 

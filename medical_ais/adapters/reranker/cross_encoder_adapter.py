@@ -55,3 +55,9 @@ class CrossEncoderAdapter(IReranker):
             RankedResult(id=c["id"], text=c["text"], score=float(s))
             for c, s in ranked[:top_k]
         ]
+
+    async def warm_up(self) -> None:
+        """Pre-load the model so the first real query is not delayed."""
+        logger.info("reranker.warming_up", model=self._model_name)
+        await asyncio.to_thread(self._load)
+        logger.info("reranker.ready", model=self._model_name)

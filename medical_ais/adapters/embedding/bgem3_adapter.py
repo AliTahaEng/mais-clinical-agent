@@ -42,3 +42,9 @@ class BGEM3Adapter(IEmbeddingModel):
     async def embed_query(self, text: str) -> list[float]:
         results = await self.embed_texts([text])
         return results[0]
+
+    async def warm_up(self) -> None:
+        """Pre-load the model so the first real query is not delayed."""
+        logger.info("embedding.warming_up", model=self._model_name)
+        await asyncio.to_thread(self._load_model)
+        logger.info("embedding.ready", model=self._model_name)

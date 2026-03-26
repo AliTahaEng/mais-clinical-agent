@@ -85,7 +85,7 @@ async def get_audit_log(
                     "event_type": r.event_type,
                     "agent_id": r.agent_id,
                     "timestamp": r.timestamp.isoformat() if hasattr(r.timestamp, "isoformat") else str(r.timestamp),
-                    **r.payload,
+                    "payload": r.payload if isinstance(r.payload, dict) else {},
                 }
                 for r in audit_records
             ]
