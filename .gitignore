@@ -25,6 +25,8 @@ data/uploads/
 data/documents/
 
 # ── Environment & secrets ─────────────────────────────────────
+medical_ais/.env
+medical_ais/.env.example
 .env
 .env.local
 .env.*.local
@@ -37,3 +39,5 @@ data/documents/
 .vscode/
 *.DS_Store
 Thumbs.db
+data/
+plan/
