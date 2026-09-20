@@ -41,3 +41,8 @@ plan/
 .vscode/
 *.DS_Store
 Thumbs.db
+
+# local tooling / bytecode
+.claude/
+__pycache__/
+*.pyc
